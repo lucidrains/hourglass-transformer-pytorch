@@ -1,6 +1,6 @@
 ## Hourglass Transformer - Pytorch (wip)
 
-Implementation of <a href="https://arxiv.org/abs/2110.13711">Hourglass Transformer</a>, in Pytorch
+Implementation of <a href="https://arxiv.org/abs/2110.13711">Hourglass Transformer</a>, in Pytorch. It will also contain some of my own ideas about how to make it work better.
 
 ## Citations
 
