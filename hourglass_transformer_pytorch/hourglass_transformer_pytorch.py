@@ -258,7 +258,7 @@ class HourglassTransformer(nn.Module):
         x = pad_to_multiple(x, s, dim = -2)
 
         if exists(mask):
-            mask = pad_to_multiple(mask, s, dim = -1, value = False)
+            padded_mask = pad_to_multiple(mask, s, dim = -1, value = False)
 
         # save the residual, and for "attention resampling" at downsample and upsample
 
@@ -271,23 +271,29 @@ class HourglassTransformer(nn.Module):
             x = F.pad(x, (0, 0, shift, -shift), value = 0.)
 
             if exists(mask):
-                mask = F.pad(mask, (shift, -shift), value = False)
+                padded_mask = F.pad(padded_mask, (shift, -shift), value = False)
 
         # naive average pool
 
         downsampled = self.downsample(x)
 
         if exists(mask):
-            downsampled_mask = reduce(mask, 'b (n s) -> b n', 'sum', s = s) > 0
+            downsampled_mask = reduce(padded_mask, 'b (n s) -> b n', 'sum', s = s) > 0
         else:
             downsampled_mask = None
 
         # pre-valley "attention resampling" - they have the pooled token in each bucket attend to the tokens pre-pooled
 
         if exists(self.attn_resampling_pre_valley):
+            if exists(mask):
+                attn_resampling_mask = rearrange(padded_mask, 'b (n s) -> (b n) s', s = s)
+            else:
+                attn_resampling_mask = None
+
             downsampled = self.attn_resampling_pre_valley(
                 rearrange(downsampled, 'b n d -> (b n) () d'),
-                rearrange(x, 'b (n s) d -> (b n) s d', s = s)
+                rearrange(x, 'b (n s) d -> (b n) s d', s = s),
+                mask = attn_resampling_mask
             )
 
             downsampled = rearrange(downsampled, '(b n) () d -> b n d', b = b)

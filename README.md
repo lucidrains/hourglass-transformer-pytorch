@@ -97,8 +97,8 @@ $ python train.py
 ## Todo
 
 - [x] work with non-autoregressive, accounting for masking
+- [x] account for masking for attention resampling
 - [ ] account for shift padding when naive downsampling
-- [ ] account for masking for attention resampling
 
 ## Citations
 
