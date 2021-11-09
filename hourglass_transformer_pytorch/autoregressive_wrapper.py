@@ -28,6 +28,8 @@ def top_k(logits, thres = 0.9):
 class AutoregressiveWrapper(nn.Module):
     def __init__(self, net, pad_value = 0):
         super().__init__()
+        assert hasattr(net, 'max_seq_len'), 'your transformer class must have max_seq_len set to the maximum sequence length'
+
         self.pad_value = pad_value
         self.net = net
         self.max_seq_len = net.max_seq_len
