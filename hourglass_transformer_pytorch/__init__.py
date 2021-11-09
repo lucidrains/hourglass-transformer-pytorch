@@ -1,1 +1,1 @@
-from hourglass_transformer_pytorch.hourglass_transformer_pytorch import HourglassTransformer
+from hourglass_transformer_pytorch.hourglass_transformer_pytorch import HourglassTransformerLM

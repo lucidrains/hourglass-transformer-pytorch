@@ -77,7 +77,9 @@ class Transformer(nn.Module):
     def __init__(
         self,
         dim,
+        *,
         depth,
+        causal = False,
         heads = 8,
         dim_head = 64,
         attn_dropout = 0.,
@@ -90,7 +92,7 @@ class Transformer(nn.Module):
 
         for _ in range(depth):
             self.layers.append(nn.ModuleList([
-                PreNormResidual(dim, Attention(dim, heads = heads, dim_head = dim_head, dropout = attn_dropout, causal = True)),
+                PreNormResidual(dim, Attention(dim, heads = heads, dim_head = dim_head, dropout = attn_dropout, causal = causal)),
                 PreNormResidual(dim, FeedForward(dim, mult = ff_mult, dropout = ff_dropout))
             ]))
 
@@ -105,7 +107,7 @@ class Transformer(nn.Module):
 
 # main class
 
-class HourglassTransformer(nn.Module):
+class HourglassTransformerLM(nn.Module):
     def __init__(
         self,
         *,
@@ -114,8 +116,7 @@ class HourglassTransformer(nn.Module):
         max_seq_len,
         depth,
         heads = 8,
-        dim_head = 64,
-        causal = True
+        dim_head = 64
     ):
         super().__init__()
         self.max_seq_len = max_seq_len
@@ -127,7 +128,8 @@ class HourglassTransformer(nn.Module):
             dim = dim,
             depth = depth,
             dim_head = dim_head,
-            heads = heads
+            heads = heads,
+            causal = True
         )
 
         self.to_logits = nn.Sequential(

@@ -1,4 +1,4 @@
-from hourglass_transformer_pytorch import HourglassTransformer
+from hourglass_transformer_pytorch import HourglassTransformerLM
 from hourglass_transformer_pytorch.autoregressive_wrapper import AutoregressiveWrapper
 
 import random
@@ -36,13 +36,12 @@ def decode_tokens(tokens):
 
 # instantiate GPT-like decoder model
 
-model = HourglassTransformer(
+model = HourglassTransformerLM(
     num_tokens = 256,
     dim = 512,
     max_seq_len = SEQ_LEN,
     depth = 8,
-    heads = 8,
-    causal = True
+    heads = 8
 )
 
 model = AutoregressiveWrapper(model)
