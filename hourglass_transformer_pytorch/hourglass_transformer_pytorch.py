@@ -209,8 +209,7 @@ class HourglassTransformer(nn.Module):
         transformer_kwargs = dict(
             dim = dim,
             heads = heads,
-            dim_head = dim_head,
-            causal = causal
+            dim_head = dim_head
         )
 
         self.causal = causal
@@ -230,14 +229,15 @@ class HourglassTransformer(nn.Module):
             depth = valley_depth,
             attn_resampling = attn_resampling,
             updown_sample_type = updown_sample_type,
+            causal = causal,
             **transformer_kwargs
         )
 
         self.attn_resampling_pre_valley = Transformer(depth = 1, **transformer_kwargs) if attn_resampling else None
         self.attn_resampling_post_valley = Transformer(depth = 1, **transformer_kwargs) if attn_resampling else None
 
-        self.pre_transformer = Transformer(depth = pre_layers_depth, **transformer_kwargs)
-        self.post_transformer = Transformer(depth = post_layers_depth, **transformer_kwargs)
+        self.pre_transformer = Transformer(depth = pre_layers_depth, causal = causal, **transformer_kwargs)
+        self.post_transformer = Transformer(depth = post_layers_depth, causal = causal, **transformer_kwargs)
         self.norm_out = nn.LayerNorm(dim) if norm_out else nn.Identity()
 
     def forward(self, x):
