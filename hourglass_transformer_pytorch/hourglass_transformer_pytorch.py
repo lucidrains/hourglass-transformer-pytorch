@@ -1,7 +1,7 @@
 import torch
 from torch import nn, einsum
 import torch.nn.functional as F
-from einops import rearrange
+from einops import rearrange, reduce, repeat
 
 # helpers
 
@@ -10,6 +10,15 @@ def exists(val):
 
 def default(val, d):
     return val if exists(val) else d
+
+def pad_to_multiple(tensor, multiple, dim = -1):
+    seq_len = tensor.shape[dim]
+    m = seq_len / multiple
+    if m.is_integer():
+        return tensor
+    remainder = math.ceil(m) * multiple - seq_len
+    pad_offset = (0,) * (-1 - dim) * 2
+    return F.pad(tensor, (*pad_offset, 0, remainder), value = 0)
 
 def cast_tuple(val, depth = 1):
     return val if isinstance(val, tuple) else ((val,) * depth)
@@ -133,7 +142,7 @@ class HourglassTransformer(nn.Module):
         dim,
         *,
         depth,
-        shorten_factor,
+        shorten_factor = 2,
         heads = 8,
         dim_head = 64,
         causal = False,
@@ -141,10 +150,12 @@ class HourglassTransformer(nn.Module):
     ):
         super().__init__()
         assert len(depth) == 3, 'depth should be a tuple of length 3'
-        pre_layers_depth, valley_config, post_layers_depth = depth
+        pre_layers_depth, valley_depth, post_layers_depth = depth
 
         if isinstance(shorten_factor, tuple):
             shorten_factor, *rest_shorten_factor = shorten_factor
+        elif isinstance(valley_depth, int):
+            shorten_factor, rest_shorten_factor = shorten_factor, None
         else:
             shorten_factor, rest_shorten_factor = shorten_factor, shorten_factor
 
@@ -155,12 +166,39 @@ class HourglassTransformer(nn.Module):
             causal = causal
         )
 
+        self.causal = causal
+        self.shorten_factor = shorten_factor
+
+        self.valley_transformer = get_hourglass_transformer(
+            shorten_factor = rest_shorten_factor,
+            depth = valley_depth,
+            **transformer_kwargs
+        )
+
         self.pre_transformer = Transformer(depth = pre_layers_depth, **transformer_kwargs)
         self.post_transformer = Transformer(depth = post_layers_depth, **transformer_kwargs)
         self.norm_out = nn.LayerNorm(dim) if norm_out else nn.Identity()
 
     def forward(self, x):
+        shorten_factor, n = self.shorten_factor, x.shape[-2]
         x = self.pre_transformer(x)
+
+        x_residual = x
+        x = pad_to_multiple(x, shorten_factor, dim = -2)
+
+        if self.causal:
+            shift = shorten_factor - 1
+            x = F.pad(x, (0, 0, shift, -shift), value = 0.)
+
+        x = reduce(x, 'b (n r) d -> b n d', 'mean', r = shorten_factor)
+
+        x = self.valley_transformer(x)
+
+        x = repeat(x, 'b n d -> b (n r) d', r = shorten_factor)
+
+        x = x[:, :n]
+        x = x + x_residual
+
         x = self.post_transformer(x)
         return self.norm_out(x)
 

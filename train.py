@@ -40,7 +40,8 @@ model = HourglassTransformerLM(
     num_tokens = 256,
     dim = 512,
     max_seq_len = SEQ_LEN,
-    depth = 8,
+    depth = (4, 2, 4),
+    shorten_factor = 2,
     heads = 8
 )
 
