@@ -66,14 +66,17 @@ class Attention(nn.Module):
         self.scale = dim_head ** -0.5
         inner_dim = heads * dim_head
 
-        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
+        self.to_q = nn.Linear(dim, inner_dim, bias = False)
+        self.to_kv = nn.Linear(dim, inner_dim * 2, bias = False)
         self.to_out = nn.Linear(inner_dim, dim)
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x):
+    def forward(self, x, context = None):
         h, device = self.heads, x.device
-        q, k, v = self.to_qkv(x).chunk(3, dim = -1)
+        kv_input = default(context, x)
+
+        q, k, v = self.to_q(x), *self.to_kv(kv_input).chunk(2, dim = -1)
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
 
         q = q * self.scale
@@ -129,9 +132,9 @@ class Transformer(nn.Module):
 
         self.norm = nn.LayerNorm(dim) if norm_out else nn.Identity()
 
-    def forward(self, x):
+    def forward(self, x, context = None):
         for attn, ff in self.layers:
-            x = attn(x)
+            x = attn(x, context = context)
             x = ff(x)
 
         return self.norm(x)
@@ -143,6 +146,7 @@ class HourglassTransformer(nn.Module):
         *,
         depth,
         shorten_factor = 2,
+        attn_resampling = True,
         heads = 8,
         dim_head = 64,
         causal = False,
@@ -152,7 +156,7 @@ class HourglassTransformer(nn.Module):
         assert len(depth) == 3, 'depth should be a tuple of length 3'
         pre_layers_depth, valley_depth, post_layers_depth = depth
 
-        if isinstance(shorten_factor, tuple):
+        if isinstance(shorten_factor, (tuple, list)):
             shorten_factor, *rest_shorten_factor = shorten_factor
         elif isinstance(valley_depth, int):
             shorten_factor, rest_shorten_factor = shorten_factor, None
@@ -175,29 +179,79 @@ class HourglassTransformer(nn.Module):
             **transformer_kwargs
         )
 
+        self.attn_resampling_pre_valley = Transformer(depth = 1, **transformer_kwargs) if attn_resampling else None
+        self.attn_resampling_post_valley = Transformer(depth = 1, **transformer_kwargs) if attn_resampling else None
+
         self.pre_transformer = Transformer(depth = pre_layers_depth, **transformer_kwargs)
         self.post_transformer = Transformer(depth = post_layers_depth, **transformer_kwargs)
         self.norm_out = nn.LayerNorm(dim) if norm_out else nn.Identity()
 
     def forward(self, x):
-        shorten_factor, n = self.shorten_factor, x.shape[-2]
+        # b : batch, n : sequence length, d : feature dimension, s : shortening factor
+
+        s, b, n = self.shorten_factor, *x.shape[:2]
+
+        # top half of hourglass, pre-transformer layers
+
         x = self.pre_transformer(x)
 
-        x_residual = x
-        x = pad_to_multiple(x, shorten_factor, dim = -2)
+        # pad to multiple of shortening factor, in preparation for pooling
+
+        x = pad_to_multiple(x, s, dim = -2)
+
+        # save the residual, and for "attention resampling" at downsample and upsample
+
+        x_residual = x.clone()
+
+        # if autoregressive, do the shift by shortening factor minus one
 
         if self.causal:
-            shift = shorten_factor - 1
+            shift = s - 1
             x = F.pad(x, (0, 0, shift, -shift), value = 0.)
 
-        x = reduce(x, 'b (n r) d -> b n d', 'mean', r = shorten_factor)
+        # naive average pool
+
+        x = reduce(x, 'b (n s) d -> b n d', 'mean', s = s)
+
+        # pre-valley "attention resampling" - they have the pooled token in each bucket attend to the tokens pre-pooled
+
+        if exists(self.attn_resampling_pre_valley):
+            x = self.attn_resampling_pre_valley(
+                rearrange(x, 'b n d -> (b n) () d'),
+                rearrange(x_residual, 'b (n s) d -> (b n) s d', s = s)
+            )
+
+            x = rearrange(x, '(b n) () d -> b n d', b = b)
+
+        # the "valley" - either a regular transformer or another hourglass
 
         x = self.valley_transformer(x)
 
-        x = repeat(x, 'b n d -> b (n r) d', r = shorten_factor)
+        valley_out = x.clone()
+
+        # naive repeat upsample
+
+        x = repeat(x, 'b n d -> b (n s) d', s = s)
+
+        # add the residual
+
+        x = x + x_residual
+
+        # post-valley "attention resampling"
+
+        if exists(self.attn_resampling_post_valley):
+            x = self.attn_resampling_post_valley(
+                rearrange(x, 'b (n s) d -> (b n) s d', s = s),
+                rearrange(valley_out, 'b n d -> (b n) () d')
+            )
+
+            x = rearrange(x, '(b n) s d -> b (n s) d', b = b)
+
+        # bring sequence back to original length, if it were padded for pooling
 
         x = x[:, :n]
-        x = x + x_residual
+
+        # post-valley transformers
 
         x = self.post_transformer(x)
         return self.norm_out(x)
@@ -214,7 +268,8 @@ class HourglassTransformerLM(nn.Module):
         depth,
         shorten_factor = None,
         heads = 8,
-        dim_head = 64
+        dim_head = 64,
+        attn_resampling = True
     ):
         super().__init__()
         self.max_seq_len = max_seq_len
@@ -226,6 +281,7 @@ class HourglassTransformerLM(nn.Module):
             dim = dim,
             depth = depth,
             shorten_factor = shorten_factor,
+            attn_resampling = attn_resampling,
             dim_head = dim_head,
             heads = heads,
             causal = True,
