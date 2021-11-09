@@ -265,21 +265,21 @@ class HourglassTransformer(nn.Module):
 
         # naive average pool
 
-        x = self.downsample(x)
+        downsampled = self.downsample(x)
 
         # pre-valley "attention resampling" - they have the pooled token in each bucket attend to the tokens pre-pooled
 
         if exists(self.attn_resampling_pre_valley):
-            x = self.attn_resampling_pre_valley(
-                rearrange(x, 'b n d -> (b n) () d'),
-                rearrange(x_residual, 'b (n s) d -> (b n) s d', s = s)
+            downsampled = self.attn_resampling_pre_valley(
+                rearrange(downsampled, 'b n d -> (b n) () d'),
+                rearrange(x, 'b (n s) d -> (b n) s d', s = s)
             )
 
-            x = rearrange(x, '(b n) () d -> b n d', b = b)
+            downsampled = rearrange(downsampled, '(b n) () d -> b n d', b = b)
 
         # the "valley" - either a regular transformer or another hourglass
 
-        x = self.valley_transformer(x)
+        x = self.valley_transformer(downsampled)
 
         valley_out = x.clone()
 
