@@ -194,10 +194,7 @@ class HourglassTransformerLM(nn.Module):
             norm_out = True
         )
 
-        self.to_logits = nn.Sequential(
-            nn.LayerNorm(dim),
-            nn.Linear(dim, num_tokens)
-        )
+        self.to_logits = nn.Linear(dim, num_tokens)
 
     def forward(self, x):
         device = x.device
