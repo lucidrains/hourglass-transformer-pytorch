@@ -11,6 +11,26 @@ def exists(val):
 def default(val, d):
     return val if exists(val) else d
 
+def cast_tuple(val, depth = 1):
+    return val if isinstance(val, tuple) else ((val,) * depth)
+
+# factory
+
+def get_hourglass_transformer(
+    dim,
+    *,
+    depth,
+    shorten_factor,
+    **kwargs
+):
+    assert isinstance(depth, int) or (isinstance(depth, tuple)  and len(depth) == 3), 'depth must be either an integer or a tuple of 3, indicating (pre_transformer_depth, <nested-hour-glass-config>, post_transformer_depth)'
+    assert not (isinstance(depth, int) and shorten_factor), 'there does not need to be a shortening factor when only a single transformer block is indicated (depth of one integer value)'
+
+    if isinstance(depth, int):
+        return Transformer(dim = dim, depth = depth, **kwargs)
+
+    return HourglassTransformer(dim = dim, depth = depth, shorten_factor = shorten_factor, **kwargs)
+
 # classes
 
 class PreNormResidual(nn.Module):
@@ -73,6 +93,8 @@ def FeedForward(dim, mult = 4, dropout = 0.):
         nn.Linear(dim * mult, dim)
     )
 
+# transformer classes
+
 class Transformer(nn.Module):
     def __init__(
         self,
@@ -85,7 +107,7 @@ class Transformer(nn.Module):
         attn_dropout = 0.,
         ff_mult = 4,
         ff_dropout = 0.,
-        norm_out = True
+        norm_out = False
     ):
         super().__init__()
         self.layers = nn.ModuleList([])
@@ -105,6 +127,43 @@ class Transformer(nn.Module):
 
         return self.norm(x)
 
+class HourglassTransformer(nn.Module):
+    def __init__(
+        self,
+        dim,
+        *,
+        depth,
+        shorten_factor,
+        heads = 8,
+        dim_head = 64,
+        causal = False,
+        norm_out = False
+    ):
+        super().__init__()
+        assert len(depth) == 3, 'depth should be a tuple of length 3'
+        pre_layers_depth, valley_config, post_layers_depth = depth
+
+        if isinstance(shorten_factor, tuple):
+            shorten_factor, *rest_shorten_factor = shorten_factor
+        else:
+            shorten_factor, rest_shorten_factor = shorten_factor, shorten_factor
+
+        transformer_kwargs = dict(
+            dim = dim,
+            heads = heads,
+            dim_head = dim_head,
+            causal = causal
+        )
+
+        self.pre_transformer = Transformer(depth = pre_layers_depth, **transformer_kwargs)
+        self.post_transformer = Transformer(depth = post_layers_depth, **transformer_kwargs)
+        self.norm_out = nn.LayerNorm(dim) if norm_out else nn.Identity()
+
+    def forward(self, x):
+        x = self.pre_transformer(x)
+        x = self.post_transformer(x)
+        return self.norm_out(x)
+
 # main class
 
 class HourglassTransformerLM(nn.Module):
@@ -115,6 +174,7 @@ class HourglassTransformerLM(nn.Module):
         dim,
         max_seq_len,
         depth,
+        shorten_factor = None,
         heads = 8,
         dim_head = 64
     ):
@@ -124,12 +184,14 @@ class HourglassTransformerLM(nn.Module):
         self.token_emb = nn.Embedding(num_tokens, dim)
         self.pos_emb = nn.Embedding(max_seq_len, dim)
 
-        self.transformer = Transformer(
+        self.transformer = get_hourglass_transformer(
             dim = dim,
             depth = depth,
+            shorten_factor = shorten_factor,
             dim_head = dim_head,
             heads = heads,
-            causal = True
+            causal = True,
+            norm_out = True
         )
 
         self.to_logits = nn.Sequential(
@@ -144,5 +206,4 @@ class HourglassTransformerLM(nn.Module):
         x = x + rearrange(pos_emb, 'n d -> () n d')
 
         x = self.transformer(x)
-
         return self.to_logits(x)
