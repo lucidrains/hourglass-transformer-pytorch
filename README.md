@@ -72,6 +72,11 @@ model(img_tokens) # (1, 1024, 512)
 $ python train.py
 ```
 
+## Todo
+
+- [ ] work with non-autoregressive, accounting for masking
+- [ ] account for shift padding when naive downsampling
+
 ## Citations
 
 ```bibtex
