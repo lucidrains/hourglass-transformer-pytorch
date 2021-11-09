@@ -1,0 +1,1 @@
+from hourglass_transformer_pytorch.hourglass_transformer_pytorch import HourglassTransformer
