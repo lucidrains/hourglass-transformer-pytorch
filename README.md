@@ -66,6 +66,28 @@ model = HourglassTransformerLM(
 img_tokens = torch.randn(1, 1024, 512)
 model(img_tokens) # (1, 1024, 512)
 ```
+
+Although results were not presented in the paper, you can also use the Hourglass Transformer in this repository non-autoregressively.
+
+```python
+import torch
+from hourglass_transformer_pytorch import HourglassTransformerLM
+
+model = HourglassTransformerLM(
+    num_tokens = 20000,
+    dim = 512,
+    max_seq_len = 1024,
+    shorten_factor = 2,
+    depth = (4, 2, 4),
+    causal = False          # set this to False
+)
+
+x = torch.randint(0, 256, (1, 1024))
+mask = torch.ones((1, 1024)).bool()
+
+logits = model(x, mask = mask) # (1, 1024, 20000)
+```
+
 ## Enwik8 autoregressive example
 
 ```bash
@@ -74,8 +96,9 @@ $ python train.py
 
 ## Todo
 
-- [ ] work with non-autoregressive, accounting for masking
+- [x] work with non-autoregressive, accounting for masking
 - [ ] account for shift padding when naive downsampling
+- [ ] account for masking for attention resampling
 
 ## Citations
 

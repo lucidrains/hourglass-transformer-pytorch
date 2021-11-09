@@ -11,14 +11,14 @@ def exists(val):
 def default(val, d):
     return val if exists(val) else d
 
-def pad_to_multiple(tensor, multiple, dim = -1):
+def pad_to_multiple(tensor, multiple, dim = -1, value = 0):
     seq_len = tensor.shape[dim]
     m = seq_len / multiple
     if m.is_integer():
         return tensor
     remainder = math.ceil(m) * multiple - seq_len
     pad_offset = (0,) * (-1 - dim) * 2
-    return F.pad(tensor, (*pad_offset, 0, remainder), value = 0)
+    return F.pad(tensor, (*pad_offset, 0, remainder), value = value)
 
 def cast_tuple(val, depth = 1):
     return val if isinstance(val, tuple) else ((val,) * depth)
@@ -86,7 +86,7 @@ class PreNormResidual(nn.Module):
     def __init__(self, dim, fn):
         super().__init__()
         self.norm = nn.LayerNorm(dim)
-        self. fn = fn
+        self.fn = fn
 
     def forward(self, x, **kwargs):
         return self.fn(self.norm(x), **kwargs) + x
@@ -112,7 +112,7 @@ class Attention(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, context = None):
+    def forward(self, x, context = None, mask = None):
         h, device = self.heads, x.device
         kv_input = default(context, x)
 
@@ -122,11 +122,15 @@ class Attention(nn.Module):
         q = q * self.scale
 
         sim = einsum('b h i d, b h j d -> b h i j', q, k)
+        mask_value = -torch.finfo(sim.dtype).max
+
+        if exists(mask):
+            mask = rearrange(mask, 'b j -> b () () j')
+            sim = sim.masked_fill(~mask, mask_value)
 
         if self.causal:
             i, j = sim.shape[-2:]
             mask = torch.ones(i, j, device = device, dtype = torch.bool).triu_(j - i + 1)
-            mask_value = -torch.finfo(sim.dtype).max
             mask = rearrange(mask, 'i j -> () () i j')
             sim = sim.masked_fill(mask, mask_value)
 
@@ -172,9 +176,9 @@ class Transformer(nn.Module):
 
         self.norm = nn.LayerNorm(dim) if norm_out else nn.Identity()
 
-    def forward(self, x, context = None):
+    def forward(self, x, context = None, mask = None):
         for attn, ff in self.layers:
-            x = attn(x, context = context)
+            x = attn(x, context = context, mask = mask)
             x = ff(x)
 
         return self.norm(x)
@@ -240,18 +244,21 @@ class HourglassTransformer(nn.Module):
         self.post_transformer = Transformer(depth = post_layers_depth, causal = causal, **transformer_kwargs)
         self.norm_out = nn.LayerNorm(dim) if norm_out else nn.Identity()
 
-    def forward(self, x):
+    def forward(self, x, mask = None):
         # b : batch, n : sequence length, d : feature dimension, s : shortening factor
 
         s, b, n = self.shorten_factor, *x.shape[:2]
 
         # top half of hourglass, pre-transformer layers
 
-        x = self.pre_transformer(x)
+        x = self.pre_transformer(x, mask = mask)
 
         # pad to multiple of shortening factor, in preparation for pooling
 
         x = pad_to_multiple(x, s, dim = -2)
+
+        if exists(mask):
+            mask = pad_to_multiple(mask, s, dim = -1, value = False)
 
         # save the residual, and for "attention resampling" at downsample and upsample
 
@@ -263,9 +270,17 @@ class HourglassTransformer(nn.Module):
             shift = s - 1
             x = F.pad(x, (0, 0, shift, -shift), value = 0.)
 
+            if exists(mask):
+                mask = F.pad(mask, (shift, -shift), value = False)
+
         # naive average pool
 
         downsampled = self.downsample(x)
+
+        if exists(mask):
+            downsampled_mask = reduce(mask, 'b (n s) -> b n', 'sum', s = s) > 0
+        else:
+            downsampled_mask = None
 
         # pre-valley "attention resampling" - they have the pooled token in each bucket attend to the tokens pre-pooled
 
@@ -279,7 +294,7 @@ class HourglassTransformer(nn.Module):
 
         # the "valley" - either a regular transformer or another hourglass
 
-        x = self.valley_transformer(downsampled)
+        x = self.valley_transformer(downsampled, mask = downsampled_mask)
 
         valley_out = x.clone()
 
@@ -307,7 +322,7 @@ class HourglassTransformer(nn.Module):
 
         # post-valley transformers
 
-        x = self.post_transformer(x)
+        x = self.post_transformer(x, mask = mask)
         return self.norm_out(x)
 
 # main class
@@ -324,7 +339,8 @@ class HourglassTransformerLM(nn.Module):
         heads = 8,
         dim_head = 64,
         attn_resampling = True,
-        updown_sample_type = 'naive'
+        updown_sample_type = 'naive',
+        causal = True
     ):
         super().__init__()
         self.max_seq_len = max_seq_len
@@ -340,17 +356,17 @@ class HourglassTransformerLM(nn.Module):
             updown_sample_type = updown_sample_type,
             dim_head = dim_head,
             heads = heads,
-            causal = True,
+            causal = causal,
             norm_out = True
         )
 
         self.to_logits = nn.Linear(dim, num_tokens)
 
-    def forward(self, x):
+    def forward(self, x, mask = None):
         device = x.device
         x = self.token_emb(x)
         pos_emb = self.pos_emb(torch.arange(x.shape[-2], device = device))
         x = x + rearrange(pos_emb, 'n d -> () n d')
 
-        x = self.transformer(x)
+        x = self.transformer(x, mask = mask)
         return self.to_logits(x)
