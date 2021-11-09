@@ -50,6 +50,22 @@ x = torch.randint(0, 256, (1, 1024))
 logits = model(x)
 ```
 
+For images, instead of average pool and repeat for the down and upsampling functions, they found that linear projections worked a lot better. You can use this by setting `updown_sample_type = 'linear'`
+
+```python
+import torch
+from hourglass_transformer_pytorch import HourglassTransformer
+
+model = HourglassTransformerLM(
+    dim = 512,
+    shorten_factor = 2,
+    depth = (4, 2, 4),
+    updown_sample_type = 'linear'
+)
+
+img_tokens = torch.randn(1, 1024, 512)
+model(img_tokens) # (1, 1024, 512)
+```
 ## Enwik8 autoregressive example
 
 ```bash

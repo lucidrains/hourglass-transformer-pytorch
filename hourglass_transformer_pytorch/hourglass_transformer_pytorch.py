@@ -30,6 +30,8 @@ def get_hourglass_transformer(
     *,
     depth,
     shorten_factor,
+    attn_resampling,
+    updown_sample_type,
     **kwargs
 ):
     assert isinstance(depth, int) or (isinstance(depth, tuple)  and len(depth) == 3), 'depth must be either an integer or a tuple of 3, indicating (pre_transformer_depth, <nested-hour-glass-config>, post_transformer_depth)'
@@ -38,7 +40,45 @@ def get_hourglass_transformer(
     if isinstance(depth, int):
         return Transformer(dim = dim, depth = depth, **kwargs)
 
-    return HourglassTransformer(dim = dim, depth = depth, shorten_factor = shorten_factor, **kwargs)
+    return HourglassTransformer(dim = dim, depth = depth, shorten_factor = shorten_factor, attn_resampling = attn_resampling, updown_sample_type = updown_sample_type, **kwargs)
+
+# up and down sample classes
+
+class NaiveDownsample(nn.Module):
+    def __init__(self, shorten_factor):
+        super().__init__()
+        self.shorten_factor = shorten_factor
+
+    def forward(self, x):
+        return reduce(x, 'b (n s) d -> b n d', 'mean', s = self.shorten_factor)
+
+class NaiveUpsample(nn.Module):
+    def __init__(self, shorten_factor):
+        super().__init__()
+        self.shorten_factor = shorten_factor
+
+    def forward(self, x):
+        return repeat(x, 'b n d -> b (n s) d', s = self.shorten_factor)
+
+class LinearDownsample(nn.Module):
+    def __init__(self, dim, shorten_factor):
+        super().__init__()
+        self.proj = nn.Linear(dim * shorten_factor, dim)
+        self.shorten_factor = shorten_factor
+
+    def forward(self, x):
+        x = rearrange(x, 'b (n s) d -> b n (s d)', s = self.shorten_factor)
+        return self.proj(x)
+
+class LinearUpsample(nn.Module):
+    def __init__(self, dim, shorten_factor):
+        super().__init__()
+        self.proj = nn.Linear(dim, dim * shorten_factor)
+        self.shorten_factor = shorten_factor
+
+    def forward(self, x):
+        x = self.proj(x)
+        return rearrange(x, 'b n (s d) -> b (n s) d', s = self.shorten_factor)
 
 # classes
 
@@ -147,6 +187,7 @@ class HourglassTransformer(nn.Module):
         depth,
         shorten_factor = 2,
         attn_resampling = True,
+        updown_sample_type = 'naive',
         heads = 8,
         dim_head = 64,
         causal = False,
@@ -154,6 +195,8 @@ class HourglassTransformer(nn.Module):
     ):
         super().__init__()
         assert len(depth) == 3, 'depth should be a tuple of length 3'
+        assert updown_sample_type in {'naive', 'linear'}, 'downsample / upsample type must be either naive (average pool and repeat) or linear (linear projection and reshape)'
+
         pre_layers_depth, valley_depth, post_layers_depth = depth
 
         if isinstance(shorten_factor, (tuple, list)):
@@ -173,9 +216,20 @@ class HourglassTransformer(nn.Module):
         self.causal = causal
         self.shorten_factor = shorten_factor
 
+        if updown_sample_type == 'naive':
+            self.downsample = NaiveDownsample(shorten_factor)
+            self.upsample   = NaiveUpsample(shorten_factor)
+        elif updown_sample_type == 'linear':
+            self.downsample = LinearDownsample(dim, shorten_factor)
+            self.upsample   = LinearUpsample(dim, shorten_factor)
+        else:
+            raise ValueError(f'unknown updown_sample_type keyword value - must be either naive or linear for now')
+
         self.valley_transformer = get_hourglass_transformer(
             shorten_factor = rest_shorten_factor,
             depth = valley_depth,
+            attn_resampling = attn_resampling,
+            updown_sample_type = updown_sample_type,
             **transformer_kwargs
         )
 
@@ -211,7 +265,7 @@ class HourglassTransformer(nn.Module):
 
         # naive average pool
 
-        x = reduce(x, 'b (n s) d -> b n d', 'mean', s = s)
+        x = self.downsample(x)
 
         # pre-valley "attention resampling" - they have the pooled token in each bucket attend to the tokens pre-pooled
 
@@ -231,7 +285,7 @@ class HourglassTransformer(nn.Module):
 
         # naive repeat upsample
 
-        x = repeat(x, 'b n d -> b (n s) d', s = s)
+        x = self.upsample(x)
 
         # add the residual
 
@@ -269,7 +323,8 @@ class HourglassTransformerLM(nn.Module):
         shorten_factor = None,
         heads = 8,
         dim_head = 64,
-        attn_resampling = True
+        attn_resampling = True,
+        updown_sample_type = 'naive'
     ):
         super().__init__()
         self.max_seq_len = max_seq_len
@@ -282,6 +337,7 @@ class HourglassTransformerLM(nn.Module):
             depth = depth,
             shorten_factor = shorten_factor,
             attn_resampling = attn_resampling,
+            updown_sample_type = updown_sample_type,
             dim_head = dim_head,
             heads = heads,
             causal = True,
