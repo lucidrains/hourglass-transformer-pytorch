@@ -56,7 +56,7 @@ For images, instead of average pool and repeat for the down and upsampling funct
 import torch
 from hourglass_transformer_pytorch import HourglassTransformer
 
-model = HourglassTransformerLM(
+model = HourglassTransformer(
     dim = 512,
     shorten_factor = 2,
     depth = (4, 2, 4),
