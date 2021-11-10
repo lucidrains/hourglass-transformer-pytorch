@@ -50,6 +50,26 @@ x = torch.randint(0, 256, (1, 1024))
 logits = model(x)
 ```
 
+Funnel Transformer would be approximately
+
+```python
+import torch
+from hourglass_transformer_pytorch import HourglassTransformerLM
+
+model = HourglassTransformerLM(
+    num_tokens = 20000,
+    dim = 512,
+    max_seq_len = 1024,
+    causal = False,
+    attn_resampling = False,
+    shorten_factor = 2,
+    depth = (2, (2, (2, 2, 2), 2), 2)
+)
+
+x = torch.randint(0, 20000, (1, 1024))
+logits = model(x)
+```
+
 For images, instead of average pool and repeat for the down and upsampling functions, they found that linear projections worked a lot better. You can use this by setting `updown_sample_type = 'linear'`
 
 ```python
