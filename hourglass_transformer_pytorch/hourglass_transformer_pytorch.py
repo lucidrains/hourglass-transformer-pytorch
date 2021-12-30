@@ -2,6 +2,7 @@ import torch
 from torch import nn, einsum
 import torch.nn.functional as F
 from einops import rearrange, reduce, repeat
+from rotary_embedding_torch import apply_rotary_emb, RotaryEmbedding
 
 # helpers
 
@@ -112,11 +113,14 @@ class Attention(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x, context = None, mask = None):
-        h, device = self.heads, x.device
+    def forward(self, x, context = None, mask = None, rotary_pos_emb = None):
+        h, device, has_context = self.heads, x.device, exists(context)
         kv_input = default(context, x)
 
         q, k, v = self.to_q(x), *self.to_kv(kv_input).chunk(2, dim = -1)
+        if exists(rotary_pos_emb) and not has_context:
+            q, k = apply_rotary_emb(rotary_pos_emb, q), apply_rotary_emb(rotary_pos_emb, k)
+
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
 
         q = q * self.scale
@@ -163,7 +167,9 @@ class Transformer(nn.Module):
         attn_dropout = 0.,
         ff_mult = 4,
         ff_dropout = 0.,
-        norm_out = False
+        norm_out = False,
+        rotary_pos_emb = False,
+        rotary_emb_dim = None,
     ):
         super().__init__()
         self.layers = nn.ModuleList([])
@@ -176,9 +182,17 @@ class Transformer(nn.Module):
 
         self.norm = nn.LayerNorm(dim) if norm_out else nn.Identity()
 
+        rotary_emb_dim = max(default(rotary_emb_dim, dim_head // 2), 32)
+        self.rotary_pos_emb = RotaryEmbedding(rotary_emb_dim) if rotary_pos_emb else None
+
     def forward(self, x, context = None, mask = None):
+        rotary_pos_emb = None
+        if exists(self.rotary_pos_emb):
+            rotary_pos_emb = self.rotary_pos_emb(torch.arange(x.shape[1]).to(device), cache_key = x.shape[1])
+            rotary_pos_emb = rotary_pos_emb[None, ...]
+
         for attn, ff in self.layers:
-            x = attn(x, context = context, mask = mask)
+            x = attn(x, context = context, mask = mask, rotary_pos_emb = rotary_pos_emb)
             x = ff(x)
 
         return self.norm(x)
@@ -195,7 +209,9 @@ class HourglassTransformer(nn.Module):
         heads = 8,
         dim_head = 64,
         causal = False,
-        norm_out = False
+        norm_out = False,
+        rotary_pos_emb = False,
+        rotary_emb_dim = None,
     ):
         super().__init__()
         assert len(depth) == 3, 'depth should be a tuple of length 3'
@@ -213,7 +229,9 @@ class HourglassTransformer(nn.Module):
         transformer_kwargs = dict(
             dim = dim,
             heads = heads,
-            dim_head = dim_head
+            dim_head = dim_head,
+            rotary_pos_emb = rotary_pos_emb,
+            rotary_emb_dim = rotary_emb_dim
         )
 
         self.causal = causal
@@ -346,13 +364,15 @@ class HourglassTransformerLM(nn.Module):
         dim_head = 64,
         attn_resampling = True,
         updown_sample_type = 'naive',
-        causal = True
+        causal = True,
+        rotary_pos_emb = False,
+        rotary_emb_dim = None,
     ):
         super().__init__()
         self.max_seq_len = max_seq_len
 
         self.token_emb = nn.Embedding(num_tokens, dim)
-        self.pos_emb = nn.Embedding(max_seq_len, dim)
+        self.pos_emb = None if rotary_pos_emb else nn.Embedding(max_seq_len, dim)
 
         self.transformer = get_hourglass_transformer(
             dim = dim,
@@ -363,7 +383,9 @@ class HourglassTransformerLM(nn.Module):
             dim_head = dim_head,
             heads = heads,
             causal = causal,
-            norm_out = True
+            norm_out = True,
+            rotary_pos_emb = rotary_pos_emb,
+            rotary_emb_dim = rotary_emb_dim
         )
 
         self.to_logits = nn.Linear(dim, num_tokens)
@@ -371,8 +393,9 @@ class HourglassTransformerLM(nn.Module):
     def forward(self, x, mask = None):
         device = x.device
         x = self.token_emb(x)
-        pos_emb = self.pos_emb(torch.arange(x.shape[-2], device = device))
-        x = x + rearrange(pos_emb, 'n d -> () n d')
+        if exists(self.pos_emb):
+            pos_emb = self.pos_emb(torch.arange(x.shape[-2], device = device))
+            x = x + rearrange(pos_emb, 'n d -> () n d')
 
         x = self.transformer(x, mask = mask)
         return self.to_logits(x)
