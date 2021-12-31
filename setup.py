@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
   name = 'hourglass-transformer-pytorch',
   packages = find_packages(),
-  version = '0.0.6',
+  version = '0.0.7',
   license='MIT',
   description = 'Hourglass Transformer',
   author = 'Phil Wang',
@@ -16,7 +16,8 @@ setup(
   ],
   install_requires=[
     'einops',
-    'torch>=1.6'
+    'torch>=1.6',
+    'rotary-embedding-torch',
   ],
   classifiers=[
     'Development Status :: 4 - Beta',
