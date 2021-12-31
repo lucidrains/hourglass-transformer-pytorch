@@ -188,7 +188,7 @@ class Transformer(nn.Module):
     def forward(self, x, context = None, mask = None):
         rotary_pos_emb = None
         if exists(self.rotary_pos_emb):
-            rotary_pos_emb = self.rotary_pos_emb(torch.arange(x.shape[1]).to(device), cache_key = x.shape[1])
+            rotary_pos_emb = self.rotary_pos_emb(torch.arange(x.shape[1]).to(x.device), cache_key = x.shape[1])
             rotary_pos_emb = rotary_pos_emb[None, ...]
 
         for attn, ff in self.layers:
